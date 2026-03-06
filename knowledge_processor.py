@@ -55,6 +55,13 @@ def extract_main_title(markdown_content):
     
     return None
 
+def truncate_content(content, max_length, content_type):
+    """Truncate content if it exceeds max length"""
+    if len(content) > max_length:
+        content = content[:max_length]
+        print(f"{content_type} truncated to {len(content)} characters")
+    return content
+
 def extract_pdf_text(file_content):
     """Extract text from PDF file"""
     try:
@@ -72,6 +79,20 @@ def extract_pdf_text(file_content):
     except Exception as e:
         print("PDF text extraction failed:", e)
         return None
+
+def handle_api_error(e):
+    """Handle API errors consistently"""
+    if isinstance(e, requests.exceptions.HTTPError):
+        if e.response.status_code == 401:
+            print(f"API Error: Authentication failed (401 Unauthorized)")
+            print(f"Please check your DEEPSEEK_API_KEY is valid")
+        elif e.response.status_code == 429:
+            print(f"API Error: Rate limit exceeded (429 Too Many Requests)")
+        else:
+            print(f"API Error: HTTP {e.response.status_code} - {e.response.text[:200]}")
+    else:
+        print(f"API Error: {e}")
+    raise
 
 def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="deepseek-chat", max_tokens=4000, temperature=0.3, max_content_length=50000):
     """Process single file using DeepSeek API"""
@@ -95,20 +116,14 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
             base64_data = base64.b64encode(file_content[:10000]).decode('utf-8')
             content_text = prompt_template + "\n\nBelow is PDF file content (base64 encoded, please decode first):\n\ndata:application/pdf;base64," + base64_data
         else:
-            if len(pdf_text) > max_content_length:
-                pdf_text = pdf_text[:max_content_length]
-                print(f"PDF text truncated to {len(pdf_text)} characters")
-            
+            pdf_text = truncate_content(pdf_text, max_content_length, "PDF text")
             content_text = prompt_template + "\n\nBelow is PDF content:\n\n" + pdf_text
         
         messages = [{"role": "user", "content": content_text}]
         
     elif file_ext in ['.txt', '.md']:
         text_content = file_content.decode('utf-8', errors='ignore')
-        if len(text_content) > max_content_length:
-            text_content = text_content[:max_content_length]
-            print(f"Text content truncated to {len(text_content)} characters")
-        
+        text_content = truncate_content(text_content, max_content_length, "Text content")
         content_text = prompt_template + "\n\nBelow is text content:\n\n" + text_content
         messages = [{"role": "user", "content": content_text}]
     
@@ -147,34 +162,62 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
         response.raise_for_status()
         result = response.json()
         return result['choices'][0]['message']['content']
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
-            print(f"API Error: Authentication failed (401 Unauthorized)")
-            print(f"Please check your DEEPSEEK_API_KEY is valid")
-        elif e.response.status_code == 429:
-            print(f"API Error: Rate limit exceeded (429 Too Many Requests)")
-        else:
-            print(f"API Error: HTTP {e.response.status_code} - {e.response.text[:200]}")
-        raise
     except Exception as e:
-        print(f"API Error: {e}")
-        raise
+        handle_api_error(e)
 
-def main():
-    """Main function"""
+def validate_config():
+    """Validate configuration parameters"""
+    config = {}
+    
+    # Required parameters
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         print("Error: DEEPSEEK_API_KEY not found in environment variables or .env file")
         print("Please set DEEPSEEK_API_KEY in .env file or environment variable")
         sys.exit(1)
+    config['api_key'] = api_key
     
-    input_dir = os.environ.get("INPUT_DIR", "knowledge_base_link")
-    output_dir = os.environ.get("OUTPUT_DIR", "processed_knowledge")
-    api_model = os.environ.get("API_MODEL", "deepseek-chat")
-    max_tokens = int(os.environ.get("MAX_TOKENS", "4000"))
-    temperature = float(os.environ.get("TEMPERATURE", "0.3"))
-    api_delay = int(os.environ.get("API_DELAY", "2"))
-    max_content_length = int(os.environ.get("MAX_CONTENT_LENGTH", "50000"))
+    # Optional parameters with defaults
+    config['input_dir'] = os.environ.get("INPUT_DIR", "knowledge_base_link")
+    config['output_dir'] = os.environ.get("OUTPUT_DIR", "processed_knowledge")
+    config['api_model'] = os.environ.get("API_MODEL", "deepseek-chat")
+    
+    # Numeric parameters with validation
+    try:
+        config['max_tokens'] = int(os.environ.get("MAX_TOKENS", "4000"))
+        config['temperature'] = float(os.environ.get("TEMPERATURE", "0.3"))
+        config['api_delay'] = int(os.environ.get("API_DELAY", "2"))
+        config['max_content_length'] = int(os.environ.get("MAX_CONTENT_LENGTH", "50000"))
+    except ValueError as e:
+        print(f"Error: Invalid configuration value: {e}")
+        sys.exit(1)
+    
+    # Validate numeric ranges
+    if config['max_tokens'] < 100 or config['max_tokens'] > 16000:
+        print("Warning: MAX_TOKENS should be between 100 and 16000")
+    
+    if config['temperature'] < 0 or config['temperature'] > 2:
+        print("Warning: TEMPERATURE should be between 0 and 2")
+    
+    if config['api_delay'] < 0:
+        print("Warning: API_DELAY should be non-negative")
+    
+    if config['max_content_length'] < 1000:
+        print("Warning: MAX_CONTENT_LENGTH should be at least 1000")
+    
+    return config
+
+def main():
+    """Main function"""
+    config = validate_config()
+    api_key = config['api_key']
+    input_dir = config['input_dir']
+    output_dir = config['output_dir']
+    api_model = config['api_model']
+    max_tokens = config['max_tokens']
+    temperature = config['temperature']
+    api_delay = config['api_delay']
+    max_content_length = config['max_content_length']
     
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
