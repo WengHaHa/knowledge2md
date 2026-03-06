@@ -62,6 +62,48 @@ def truncate_content(content, max_length, content_type):
         print(f"{content_type} truncated to {len(content)} characters")
     return content
 
+def extract_docx_text(file_content):
+    """Extract text from Word document"""
+    try:
+        from docx import Document
+        doc = Document(BytesIO(file_content))
+        text = []
+        for para in doc.paragraphs:
+            text.append(para.text)
+        return '\n'.join(text)
+    except ImportError:
+        print("python-docx not installed, falling back to base64")
+        return None
+    except Exception as e:
+        print("DOCX extraction failed:", e)
+        return None
+
+def process_image(image_content):
+    """Process image with Pillow"""
+    try:
+        from PIL import Image
+        img = Image.open(BytesIO(image_content))
+        # 可以添加图像处理逻辑，如 resize、压缩等
+        return img
+    except ImportError:
+        print("Pillow not installed, using original image")
+        return None
+    except Exception as e:
+        print("Image processing failed:", e)
+        return None
+
+def get_file_type(file_content):
+    """Get file type using python-magic"""
+    try:
+        import magic
+        mime = magic.Magic(mime=True)
+        return mime.from_buffer(file_content)
+    except ImportError:
+        print("python-magic not installed, using file extension")
+        return None
+    except Exception:
+        return None
+
 def extract_pdf_text(file_content):
     """Extract text from PDF file"""
     try:
@@ -121,6 +163,20 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
         
         messages = [{"role": "user", "content": content_text}]
         
+    elif file_ext in ['.docx', '.doc']:
+        print("Extracting Word document text...")
+        docx_text = extract_docx_text(file_content)
+        
+        if not docx_text:
+            print("Cannot extract Word text, trying base64 encoding")
+            base64_data = base64.b64encode(file_content[:10000]).decode('utf-8')
+            content_text = prompt_template + "\n\nBelow is Word document content (base64 encoded, please decode first):\n\ndata:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64_data
+        else:
+            docx_text = truncate_content(docx_text, max_content_length, "Word text")
+            content_text = prompt_template + "\n\nBelow is Word document content:\n\n" + docx_text
+        
+        messages = [{"role": "user", "content": content_text}]
+        
     elif file_ext in ['.txt', '.md']:
         text_content = file_content.decode('utf-8', errors='ignore')
         text_content = truncate_content(text_content, max_content_length, "Text content")
@@ -128,6 +184,10 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
         messages = [{"role": "user", "content": content_text}]
     
     elif file_ext in ['.jpg', '.jpeg', '.png']:
+        print("Processing image...")
+        # 尝试处理图像
+        process_image(file_content)
+        
         base64_data = base64.b64encode(file_content).decode('utf-8')
         mime_type = 'image/jpeg' if file_ext in ['.jpg', '.jpeg'] else 'image/png'
         
@@ -236,7 +296,7 @@ def main():
         print(f"Error: Input directory does not exist: {input_dir}")
         return
     
-    extensions = ['.pdf', '.md', '.txt', '.jpg', '.jpeg', '.png']
+    extensions = ['.pdf', '.md', '.txt', '.docx', '.doc', '.jpg', '.jpeg', '.png']
     
     all_files = []
     for ext in extensions:
