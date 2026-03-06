@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""
+Knowledge Base File Processor - Fixed version
+"""
+
+import os
+import sys
+import base64
+import json
+import requests
+from pathlib import Path
+import time
+import re
+import pypdf
+from io import BytesIO
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+def read_prompt_template():
+    """Read prompt template from prompts folder"""
+    prompt_file = Path("prompts/knowledge_prompt.md")
+    if not prompt_file.exists():
+        print("Error: Prompt file not found")
+        sys.exit(1)
+    
+    with open(prompt_file, 'r', encoding='utf-8') as f:
+        prompt_template = f.read()
+    
+    prompt_template = prompt_template.replace("请用Markdown代码块输出，即用三个反引号包裹你的整个回答。", "")
+    return prompt_template.strip()
+
+def extract_main_title(markdown_content):
+    """Extract main title from Markdown content"""
+    lines = markdown_content.splitlines()
+    in_code_block = False
+    
+    for line in lines:
+        if line.strip().startswith('```'):
+            in_code_block = not in_code_block
+            continue
+        
+        if not in_code_block:
+            match = re.match(r'^#\s+(.+)$', line.strip())
+            if match:
+                title = match.group(1).strip()
+                title = re.sub(r'[<>:"/\\|?*]', '', title)
+                title = title.replace(' ', '_').replace('/', '_')
+                if len(title) > 100:
+                    title = title[:100]
+                return title
+    
+    return None
+
+def extract_pdf_text(file_content):
+    """Extract text from PDF file"""
+    try:
+        pdf_file = BytesIO(file_content)
+        reader = pypdf.PdfReader(pdf_file)
+        text = ""
+        
+        for page_num, page in enumerate(reader.pages):
+            page_text = page.extract_text()
+            if page_text:
+                text += "\n--- Page " + str(page_num+1) + " ---\n"
+                text += page_text + "\n"
+        
+        return text.strip()
+    except Exception as e:
+        print("PDF text extraction failed:", e)
+        return None
+
+def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="deepseek-chat", max_tokens=4000, temperature=0.3, max_content_length=50000):
+    """Process single file using DeepSeek API"""
+    
+    with open(file_path, 'rb') as f:
+        file_content = f.read()
+    
+    file_ext = Path(file_path).suffix.lower()
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    if file_ext == '.pdf':
+        print("Extracting PDF text...")
+        pdf_text = extract_pdf_text(file_content)
+        
+        if not pdf_text:
+            print("Cannot extract PDF text, trying base64 encoding")
+            base64_data = base64.b64encode(file_content[:10000]).decode('utf-8')
+            content_text = prompt_template + "\n\nBelow is PDF file content (base64 encoded, please decode first):\n\ndata:application/pdf;base64," + base64_data
+        else:
+            if len(pdf_text) > max_content_length:
+                pdf_text = pdf_text[:max_content_length]
+                print(f"PDF text truncated to {len(pdf_text)} characters")
+            
+            content_text = prompt_template + "\n\nBelow is PDF content:\n\n" + pdf_text
+        
+        messages = [{"role": "user", "content": content_text}]
+        
+    elif file_ext in ['.txt', '.md']:
+        text_content = file_content.decode('utf-8', errors='ignore')
+        if len(text_content) > max_content_length:
+            text_content = text_content[:max_content_length]
+            print(f"Text content truncated to {len(text_content)} characters")
+        
+        content_text = prompt_template + "\n\nBelow is text content:\n\n" + text_content
+        messages = [{"role": "user", "content": content_text}]
+    
+    elif file_ext in ['.jpg', '.jpeg', '.png']:
+        base64_data = base64.b64encode(file_content).decode('utf-8')
+        mime_type = 'image/jpeg' if file_ext in ['.jpg', '.jpeg'] else 'image/png'
+        
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt_template},
+                {"type": "text", "text": "Please analyze the following image content and organize it as required:"},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}}
+            ]
+        }]
+    
+    else:
+        print(f"Unsupported file type: {file_ext}")
+        return None
+    
+    payload = {
+        "model": api_model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature
+    }
+    
+    try:
+        print(f"Calling API to process: {Path(file_path).name}")
+        response = requests.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        response.raise_for_status()
+        result = response.json()
+        return result['choices'][0]['message']['content']
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            print(f"API Error: Authentication failed (401 Unauthorized)")
+            print(f"Please check your DEEPSEEK_API_KEY is valid")
+        elif e.response.status_code == 429:
+            print(f"API Error: Rate limit exceeded (429 Too Many Requests)")
+        else:
+            print(f"API Error: HTTP {e.response.status_code} - {e.response.text[:200]}")
+        raise
+    except Exception as e:
+        print(f"API Error: {e}")
+        raise
+
+def main():
+    """Main function"""
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        print("Error: DEEPSEEK_API_KEY not found in environment variables or .env file")
+        print("Please set DEEPSEEK_API_KEY in .env file or environment variable")
+        sys.exit(1)
+    
+    input_dir = os.environ.get("INPUT_DIR", "knowledge_base_link")
+    output_dir = os.environ.get("OUTPUT_DIR", "processed_knowledge")
+    api_model = os.environ.get("API_MODEL", "deepseek-chat")
+    max_tokens = int(os.environ.get("MAX_TOKENS", "4000"))
+    temperature = float(os.environ.get("TEMPERATURE", "0.3"))
+    api_delay = int(os.environ.get("API_DELAY", "2"))
+    max_content_length = int(os.environ.get("MAX_CONTENT_LENGTH", "50000"))
+    
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+    
+    prompt_template = read_prompt_template()
+    print("Prompt template loaded")
+    print(f"API Model: {api_model}")
+    print(f"Max Tokens: {max_tokens}")
+    print(f"Temperature: {temperature}")
+    
+    processed_files = []
+    failed_files = []
+    
+    input_path = Path(input_dir)
+    if not input_path.exists():
+        print(f"Error: Input directory does not exist: {input_dir}")
+        return
+    
+    extensions = ['.pdf', '.md', '.txt', '.jpg', '.jpeg', '.png']
+    
+    all_files = []
+    for ext in extensions:
+        all_files.extend(list(input_path.glob(f"*{ext}")))
+    
+    if not all_files:
+        print("No files found to process")
+        return
+    
+    print(f"Found {len(all_files)} files")
+    
+    for file_path in all_files:
+        try:
+            print(f"\n{'='*50}")
+            print(f"Processing file: {file_path.name}")
+            
+            result = process_file_with_deepseek(api_key, str(file_path), prompt_template, api_model, max_tokens, temperature, max_content_length)
+            if not result:
+                print("Skipping file")
+                continue
+            
+            title = extract_main_title(result)
+            if title:
+                filename = f"{title}.md"
+                print(f"Extracted title: {title}")
+            else:
+                filename = f"{file_path.stem}_processed.md"
+                print("Using default filename")
+            
+            output_file = output_path / filename
+            count = 1
+            while output_file.exists():
+                if title:
+                    filename = f"{title}_{count}.md"
+                else:
+                    filename = f"{file_path.stem}_processed_{count}.md"
+                output_file = output_path / filename
+                count += 1
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(result)
+            
+            print(f"Saved as: {filename}")
+            processed_files.append((file_path.name, filename))
+            
+            time.sleep(api_delay)
+            
+        except Exception as e:
+            print(f"Failed: {e}")
+            failed_files.append(file_path.name)
+    
+    report_path = output_path / "processing_report.md"
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write("# Knowledge Base Processing Report\n\n")
+        f.write(f"Processing time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        if processed_files:
+            f.write("## Successfully processed files\n\n")
+            for input_name, output_name in processed_files:
+                f.write(f"- **{input_name}** → `{output_name}`\n")
+        
+        if failed_files:
+            f.write("\n## Failed files\n\n")
+            for failed in failed_files:
+                f.write(f"- {failed}\n")
+        
+        f.write("\n## Statistics\n\n")
+        f.write(f"- Successfully processed: {len(processed_files)} files\n")
+        f.write(f"- Failed: {len(failed_files)} files\n")
+    
+    print(f"\n{'='*50}")
+    print("Processing completed!")
+    print(f"Output directory: {output_dir}")
+    print(f"Processing report: {report_path}")
+    
+    if processed_files:
+        print("\nGenerated Markdown files:")
+        for _, output_name in processed_files:
+            print(f"  - {output_name}")
+
+if __name__ == "__main__":
+    main()
