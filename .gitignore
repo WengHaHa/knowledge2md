@@ -43,3 +43,5 @@ knowledge_output/
 # OS
 .DS_Store
 Thumbs.db
+
+knowledge2md.db
