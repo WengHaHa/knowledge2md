@@ -1,5 +1,5 @@
 @echo on
-chcp 65001 >nul
+chcp 65001
 
 :: 启动脚本 - 知识库处理器
 
@@ -8,7 +8,7 @@ echo ====================================
 
 :: 检查Python是否安装
 echo 检查Python是否安装...
-python --version >nul 2>&1
+python --version
 if %errorlevel% neq 0 (
     echo 错误: Python未安装，请先安装Python 3.7+
     pause
@@ -17,7 +17,7 @@ if %errorlevel% neq 0 (
 
 :: 检查pip是否可用
 echo 检查pip是否可用...
-pip --version >nul 2>&1
+pip --version
 if %errorlevel% neq 0 (
     echo 错误: pip不可用，请确保Python安装正确
     pause
@@ -37,7 +37,7 @@ echo 依赖检查完成
 
 :: 检查Node.js是否安装
 echo 检查Node.js是否安装...
-where npm >nul 2>&1
+where npm
 if %errorlevel% neq 0 (
     echo 错误: Node.js未安装，请先安装Node.js
     pause
@@ -46,7 +46,7 @@ if %errorlevel% neq 0 (
 
 :: 检查npm是否可用
 echo 检查npm是否可用...
-npm --version >nul 2>&1
+npm --version
 if %errorlevel% neq 0 (
     echo 错误: npm不可用，请确保Node.js安装正确
     pause
@@ -70,7 +70,7 @@ start "后端服务" python main.py
 
 :: 等待后端服务启动
 echo 等待后端服务启动...
-timeout /t 3 /nobreak >nul
+timeout /t 3 /nobreak
 
 :: 启动前端开发服务器
 echo 启动前端服务...
@@ -83,4 +83,4 @@ echo 后端地址: http://localhost:8000
 echo ====================================
 
 echo 按任意键退出...
-pause >nul
+pause
