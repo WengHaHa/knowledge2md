@@ -26,7 +26,7 @@ if %errorlevel% neq 0 (
 
 :: 检查依赖是否安装
 echo 检查依赖...
-pip install -r requirements.txt
+pip install -r requirements.txt --upgrade
 if %errorlevel% neq 0 (
     echo 错误: 安装依赖失败
     pause
