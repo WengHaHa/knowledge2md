@@ -1,5 +1,5 @@
 @echo on
-chcp 65001
+chcp 65001 >nul
 
 :: 启动脚本 - 知识库处理器
 
@@ -8,7 +8,7 @@ echo ====================================
 
 :: 检查Python是否安装
 echo 检查Python是否安装...
-python --version
+python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo 错误: Python未安装，请先安装Python 3.7+
     pause
@@ -17,7 +17,7 @@ if %errorlevel% neq 0 (
 
 :: 检查pip是否可用
 echo 检查pip是否可用...
-pip --version
+pip --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo 错误: pip不可用，请确保Python安装正确
     pause
@@ -46,7 +46,7 @@ if %errorlevel% neq 0 (
 
 :: 检查npm是否可用
 echo 检查npm是否可用...
-npm --version
+npm --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo 错误: npm不可用，请确保Node.js安装正确
     pause
