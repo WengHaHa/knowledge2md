@@ -40,8 +40,16 @@ env/
 knowledge_output/
 
 
+# Node.js
+node_modules/
+dist/
+
 # OS
 .DS_Store
 Thumbs.db
 
+# Database files
 knowledge2md.db
+*.db
+*.sqlite
+*.sqlite3
