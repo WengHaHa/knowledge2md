@@ -1,6 +1,10 @@
-requests>=2.31.0
-pypdf>=3.0.0
-python-docx>=1.1.0
-Pillow>=10.0.0
-python-magic>=0.4.27
-python-dotenv>=1.0.0
+pypdf
+python-dotenv
+requests
+matplotlib
+Pillow
+python-docx
+python-magic
+fastapi
+uvicorn
+pydantic

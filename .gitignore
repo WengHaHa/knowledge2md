@@ -36,7 +36,9 @@ env/
 *~
 
 # Output directories
-processed_knowledge/
+.processing_state.json
+knowledge_output/
+
 
 # OS
 .DS_Store

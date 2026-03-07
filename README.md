@@ -1,225 +1,111 @@
-# 知识库文件处理器
+# Knowledge2MD
 
-使用DeepSeek API将各种文件（PDF、Word、图片等）转换为结构化Markdown知识库笔记。
+一个智能知识库文件处理器，使用DeepSeek API将各种文件转换为结构化Markdown知识库笔记。
 
-## 特性
+## ✨ 特性
 
-- ✅ 支持多种文件格式：PDF、Word、图片、纯文本、Markdown
-- ✅ 智能文件命名：以生成的主标题命名输出文件
-- ✅ 结构化输出：严格遵循知识库笔记格式
-- ✅ 独立提示词：提示词模板存储在独立文件夹
-- ✅ 处理报告：自动生成处理统计报告
+- 📁 **多格式支持**：PDF、Word、图片、纯文本、Markdown
+- ⚡ **并发处理**：多线程加速，大幅缩短处理时间
+- 🔄 **增量处理**：只处理新增或修改的文件
+- 🧹 **内容去重**：自动检测相似内容避免重复
+- ⭐ **质量评分**：多维度评估生成内容的质量
+- 📝 **智能命名**：以生成的主标题命名输出文件
+- 📊 **处理报告**：自动生成处理统计报告
+- 🌐 **Web界面**：直观的Vue 3前端界面
 
-## 快速开始
+## 🚀 快速开始
 
-### 1. 配置API密钥
-
-**方法一：使用.env配置文件（推荐）**
-
-```powershell
-# 复制配置模板
-copy .env.example .env
-
-# 编辑.env文件，填入你的API密钥
-# DEEPSEEK_API_KEY=your_deepseek_api_key_here
-```
-
-**方法二：使用环境变量**
-
-```powershell
-# 临时设置（仅当前会话）
-$env:DEEPSEEK_API_KEY="your_deepseek_api_key_here"
-
-# 或永久设置（Windows系统变量，需要重启终端生效）
-setx DEEPSEEK_API_KEY "your_deepseek_api_key_here"
-```
-
-### 2. 安装依赖
-
-```powershell
-# 安装Python依赖包
-python -m pip install -r requirements.txt
-```
-
-### 3. 创建知识库链接
-
-```powershell
-# 创建符号链接到你的知识库目录
-mklink /D knowledge_base_link "D:\knowledge_base"
-```
-
-### 4. 一键运行
-
-```powershell
-# 使用PowerShell脚本（推荐）
-.\process_knowledge.ps1
-
-# 或直接使用Python脚本
-python knowledge_processor.py
-```
-
-### 5. 查看结果
-
-```powershell
-# 查看生成的Markdown文件
-dir processed_knowledge\
-
-# 查看处理报告
-Get-Content processed_knowledge\processing_report.md
-```
-
-## 配置说明
-
-系统支持通过.env文件配置各种参数，无需修改代码：
+### 1. 安装依赖
 
 ```bash
-# DeepSeek API密钥（必需）
-DEEPSEEK_API_KEY=your_api_key_here
+# 安装Python依赖
+python -m pip install -r requirements.txt
 
-# 输入目录（可选，默认：knowledge_base_link）
-INPUT_DIR=knowledge_base_link
-
-# 输出目录（可选，默认：processed_knowledge）
-OUTPUT_DIR=processed_knowledge
-
-# API模型（可选，默认：deepseek-chat）
-API_MODEL=deepseek-chat
-
-# 最大Token数（可选，默认：4000）
-MAX_TOKENS=4000
-
-# 温度参数（可选，默认：0.3）
-TEMPERATURE=0.3
-
-# API调用间隔秒数（可选，默认：2）
-API_DELAY=2
-
-# 最大内容长度字符数（可选，默认：50000）
-MAX_CONTENT_LENGTH=50000
+# 安装Node.js依赖
+npm install
 ```
 
-## 文件格式支持
+### 2. 运行应用
 
-- **文本文件**：.txt, .md, .markdown
-- **文档文件**：.pdf, .doc, .docx
-- **图片文件**：.jpg, .jpeg, .png, .gif, .bmp
+```bash
+# 双击运行启动脚本
+start.bat
 
-## 输出格式
-
-每个处理后的文件将按照以下结构化格式输出：
-
-```
-# 主标题（从内容中提取）
-
-主题概述
-120-150字的概述...
-
-结构化笔记
-### 章节1
-1. 要点1
-2. 要点2
-
-### 章节2
-1. 要点1
-2. 要点2
-
-核心要点
-- **要点1** 描述...
-- **要点2** 描述...
-
-行动步骤
-1. 步骤1
-2. 步骤2
-
-推荐归档路径
-领域/细分方向/核心主题
-
-关联主题
-- 主题1
-- 主题2
-
-复习提示
-1. 提示1
-2. 提示2
-
-标签
-#标签1 #标签2 #标签3
+# 或在PowerShell中执行
+start.bat
 ```
 
-## 文件名规则
+### 3. 配置与使用
 
-1. 处理器会自动从生成的Markdown中提取主标题
-2. 清理标题中的非法字符（<>:"/\|?*等）
-3. 空格和斜杠替换为下划线
-4. 如果无法提取标题，使用原始文件名
-5. 自动处理文件名冲突
+1. 在浏览器中打开 `http://localhost:5173`
+2. 输入你的DeepSeek API密钥并保存配置
+3. 点击"开始处理"按钮开始处理文件
+4. 在日志界面查看处理进度和结果
 
-## 提示词定制
+## 📁 项目结构
 
-如需修改处理逻辑，编辑 `prompts/knowledge_prompt.md` 文件。
-
-## 处理报告
-
-处理完成后会生成 `processed_knowledge/processing_report.md`，包含：
-- 处理时间和统计
-- 成功处理的文件列表
-- 处理失败的文件列表
-
-## 注意事项
-
-1. **文件大小限制**：单个文件最大50MB
-2. **API限制**：处理间隔2秒以避免限流
-3. **输出目录**：`processed_knowledge/` 自动创建
-4. **文件数量**：建议每次处理不超过100个文件
-
-## 故障排除
-
-### 常见问题
-
-1. **PowerShell脚本乱码**：脚本已改用英文显示，避免中文编码问题
-2. **API密钥错误**：确认已在.env文件中正确设置 `DEEPSEEK_API_KEY` 或设置了环境变量
-3. **文件访问错误**：确认 `knowledge_base_link` 符号链接有效
-4. **API调用失败**：检查网络连接和API配额
-5. **Python依赖问题**：运行 `python -m pip install -r requirements.txt` 安装所需依赖
-6. **.env文件未生效**：确保已安装python-dotenv包，并检查.env文件格式正确
-
-### 日志输出示例
-
-```powershell
-Checking Python dependencies...
-Prompt template loaded
-API Model: deepseek-chat
-Max Tokens: 4000
-Temperature: 0.3
-Found 2 files
-
-==================================================
-Processing file: 参考日推 138｜我们是如何感知时间的？.pdf
-Extracting PDF text...
-PDF text truncated to 50000 characters
-Calling API to process: 参考日推 138｜我们是如何感知时间的？.pdf
-Extracted title: 时间感知的神经机制与心理学研究
-Saved as: 时间感知的神经机制与心理学研究.md
-
-==================================================
-Processing file: 参考日推 247｜实践本身就是目标.pdf
-Extracting PDF text...
-Calling API to process: 参考日推 247｜实践本身就是目标.pdf
-Extracted title: 实践导向的生活哲学：在行动中寻找意义
-Saved as: 实践导向的生活哲学：在行动中寻找意义.md
-
-==================================================
-Processing completed!
-Output directory: processed_knowledge
-Processing report: processed_knowledge\processing_report.md
-
-Generated Markdown files:
-  - 时间感知的神经机制与心理学研究.md
-  - 实践导向的生活哲学：在行动中寻找意义.md
+```
+knowledge2md/
+├── knowledge_input/   # 待处理文件目录
+├── knowledge_output/   # 处理完成的Markdown文件
+├── prompts/              # 提示词模板
+├── src/                 # 前端代码
+│   ├── App.vue          # 主界面
+│   └── main.js          # 入口文件
+├── .env.example         # 环境变量示例
+├── knowledge2md.db      # SQLite配置数据库
+├── knowledge_processor.py  # 核心处理逻辑
+├── main.py              # FastAPI后端
+├── package.json         # Node.js依赖
+├── requirements.txt     # Python依赖
+├── start.bat            # 启动脚本
+└── vite.config.js       # Vite配置
 ```
 
-## 性能优化
+## 🔧 核心配置
 
-- 大型PDF文件可能会分段处理
-- 图片OCR通过DeepSeek多模态API完成
-- 文本文件优先使用文本模式传输，避免base64开销
+配置通过Web界面设置并存储在SQLite数据库中：
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `DEEPSEEK_API_KEY` | DeepSeek API密钥（必需） | - |
+| `CONCURRENT_PROCESSING` | 启用并发处理 | true |
+| `MAX_WORKERS` | 并发工作线程数 | 3 |
+| `INCREMENTAL_PROCESSING` | 启用增量处理 | true |
+| `ENABLE_DEDUPLICATION` | 启用内容去重 | true |
+| `DEDUPLICATION_THRESHOLD` | 去重相似度阈值 | 0.85 |
+| `ENABLE_QUALITY_SCORING` | 启用质量评分 | true |
+
+## 📝 使用说明
+
+1. **添加文件**：将需要处理的文件放入 `knowledge_input` 目录
+2. **配置API**：在Web界面输入DeepSeek API密钥并保存
+3. **开始处理**：点击"开始处理"按钮
+4. **查看结果**：处理完成后，在 `knowledge_output` 目录查看生成的Markdown文件
+5. **查看日志**：Web界面会显示详细的处理日志和进度
+
+## 🔍 日志说明
+
+- 所有日志均显示北京时间（UTC+8）
+- 日志包含处理状态、错误信息和处理结果
+- 日志会保留到下一次处理开始
+
+## 🛠️ 技术栈
+
+- **后端**：Python 3.9+, FastAPI, SQLite
+- **前端**：Vue 3, Vite, JavaScript
+- **API**：DeepSeek API
+- **处理**：多线程并发处理
+- **存储**：SQLite数据库
+
+## 📄 许可证
+
+MIT License - 详见 [LICENSE](LICENSE) 文件
+
+## 🤝 贡献
+
+欢迎提交Issue和Pull Request！
+
+## 📞 支持
+
+如果遇到问题，请检查日志输出或提交Issue。
