@@ -29,5 +29,7 @@ echo 前端地址: http://localhost:3000
 echo 后端地址: http://localhost:8000
 echo ================================
 
-echo 按任意键退出...
-pause
+echo 按任意键退出，或30秒后自动关闭...
+:: 30秒自动关闭
+choice /t 30 /d y /n >nul
+

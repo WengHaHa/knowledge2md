@@ -273,8 +273,11 @@ def generate_statistics_chart(all_files, skipped_files, processed_files, failed_
         # 调整布局
         plt.tight_layout()
         
-        # 保存图表
+        # 保存图表（覆盖已存在的文件）
         chart_path = Path(output_dir) / "processing_statistics.png"
+        # 确保目录存在
+        chart_path.parent.mkdir(exist_ok=True)
+        # 保存图表，覆盖已存在的文件
         plt.savefig(chart_path, dpi=100, bbox_inches='tight')
         plt.close()
         

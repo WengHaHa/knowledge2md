@@ -75,6 +75,9 @@
 <script>
 import axios from 'axios'
 
+// 配置axios使用相对路径，避免端口问题
+axios.defaults.baseURL = ''
+
 export default {
   name: 'App',
   data() {
@@ -126,6 +129,12 @@ export default {
       this.isProcessing = true
       this.logContent = '开始处理...\n'
       this.statusText = '处理中...'
+      this.progress = 0
+      
+      // 用于去重的最后一条日志
+      let lastLog = ''
+      let fileCount = 0
+      let processedCount = 0
       
       // 启动处理并获取实时日志
       const eventSource = new EventSource('/api/process')
@@ -133,13 +142,33 @@ export default {
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data)
         if (data.log) {
-          // 只添加非空日志
-          if (data.log.trim()) {
-            this.logContent += data.log + '\n'
+          // 只添加非空日志且不重复
+          const log = data.log.trim()
+          if (log && log !== lastLog) {
+            this.logContent += log + '\n'
+            lastLog = log
+            
+            // 计算文件数量和处理进度
+            if (log.includes('找到') && log.includes('个文件')) {
+              const match = log.match(/找到 (\d+) 个文件/)
+              if (match) {
+                fileCount = parseInt(match[1])
+              }
+            } else if (log.includes('成功处理') || log.includes('处理失败')) {
+              processedCount++
+              if (fileCount > 0) {
+                this.progress = Math.min(100, Math.round((processedCount / fileCount) * 100))
+              }
+            }
+            
+            // 滚动到日志底部
+            setTimeout(() => {
+              const logContainer = document.querySelector('.log-container')
+              if (logContainer) {
+                logContainer.scrollTop = logContainer.scrollHeight
+              }
+            }, 100)
           }
-        }
-        if (data.progress !== undefined) {
-          this.progress = data.progress
         }
         if (data.status) {
           this.statusText = data.status
@@ -148,8 +177,13 @@ export default {
           eventSource.close()
           this.isProcessing = false
           this.statusText = '处理完成'
+          this.progress = 100
           // 不使用 alert，而是在日志中显示处理完成信息
-          this.logContent += '处理完成！\n'
+          if (this.logContent.indexOf('处理完成！') === -1) {
+            this.logContent += '处理完成！\n'
+          }
+          // 保存日志到本地存储，以便用户可以查看历史日志
+          localStorage.setItem('processingLog', this.logContent)
         }
       }
       
@@ -158,7 +192,11 @@ export default {
         this.isProcessing = false
         this.statusText = '处理失败'
         // 不使用 alert，而是在日志中显示错误信息
-        this.logContent += '处理过程中发生错误\n'
+        if (this.logContent.indexOf('处理过程中发生错误') === -1) {
+          this.logContent += '处理过程中发生错误\n'
+        }
+        // 保存日志到本地存储
+        localStorage.setItem('processingLog', this.logContent)
       }
     },
     stopProcessing() {
