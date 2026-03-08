@@ -1,11 +1,29 @@
-pypdf
-python-dotenv
-requests
-matplotlib
-Pillow
-python-docx
-python-magic
-fastapi
-uvicorn
-pydantic
-pytz
+# 核心PDF处理
+pypdf>=6.0.0
+PyMuPDF>=1.23.0  # 备用PDF处理和OCR渲染
+
+# OCR依赖
+pytesseract>=0.3.10
+pdf2image>=1.16.0
+Pillow>=10.0.0
+
+# API和网络请求
+requests>=2.31.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.5.0
+
+# 环境配置
+python-dotenv>=1.0.0
+pytz>=2023.3
+
+# 文档处理
+python-docx>=1.1.0
+python-magic>=0.4.27  # 在Windows上可能需要python-magic-bin
+
+# 进度显示和可视化
+tqdm>=4.66.0
+matplotlib>=3.8.0
+
+# 可选依赖（用于高级功能）
+# python-magic-bin>=0.4.14  # Windows用户可安装此替代包

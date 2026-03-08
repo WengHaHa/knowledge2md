@@ -5,6 +5,10 @@ Knowledge Base File Processor - Enhanced version with concurrency, incremental p
 
 import os
 import sys
+
+# 设置环境变量，确保print函数使用utf-8编码
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+
 import base64
 import json
 import requests
@@ -45,7 +49,11 @@ def read_prompt_template():
     # 使用绝对路径来确保找到提示词模板文件
     prompt_file = Path(__file__).parent / "prompts" / "knowledge_prompt.md"
     if not prompt_file.exists():
-        print(f"Error: Prompt file not found at {prompt_file}")
+        # 安全输出，避免编码错误
+        try:
+            print(f"Error: Prompt file not found at {prompt_file}")
+        except Exception:
+            print("Error: Prompt file not found")
         return "请分析以下内容，提取关键信息，并按照Markdown格式组织成结构化的知识库文档。"
     
     with open(prompt_file, 'r', encoding='utf-8') as f:
@@ -125,6 +133,194 @@ def get_file_type(file_content):
         return None
 
 
+def validate_extracted_text(text):
+    """
+    验证提取的文本是否有效（不是垃圾数据）
+    检测base64占位符、重复字符等无效内容
+    """
+    if not text:
+        return None
+    
+    text_lower = text.lower()
+    
+    # 检测base64相关标记
+    if "data:application/pdf;base64" in text_lower:
+        return None
+    
+    # 检测大量重复字符模式（base64特征）
+    import re
+    # 匹配连续重复的字符序列（如 AAAAA, aaaa, 0000）
+    repeated_pattern = re.findall(r'(.)\1{20,}', text)
+    if len(repeated_pattern) > 5:  # 超过5种重复字符模式
+        return None
+    
+    # 检测base64特征字符比例
+    base64_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+    base64_count = sum(1 for c in text if c in base64_chars)
+    if len(text) > 100 and base64_count / len(text) > 0.8:  # 超过80%是base64字符
+        return None
+    
+    # 检查是否有实际的中文或英文单词
+    chinese_chars = re.findall(r'[\u4e00-\u9fff]+', text)
+    english_words = re.findall(r'[a-zA-Z]{3,}', text)
+    
+    # 如果既没有中文也没有英文单词，可能是垃圾
+    if not chinese_chars and not english_words:
+        return None
+    
+    return text
+
+
+def extract_pdf_text_with_ocr(file_content, log_callback=None):
+    """
+    使用OCR提取PDF文本（扫描版PDF）
+    """
+    try:
+        from PIL import Image
+        import pytesseract
+        from pdf2image import convert_from_bytes
+        
+        # 设置Tesseract可执行文件路径
+        tesseract_path = os.environ.get('TESSERACT_PATH', 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe')
+        if os.path.exists(tesseract_path):
+            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        else:
+            # 尝试在PATH中查找
+            import shutil
+            tesseract_cmd = shutil.which('tesseract')
+            if tesseract_cmd:
+                pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        
+        # 检查中文语言包是否可用
+        lang = 'eng'  # 默认英语
+        try:
+            # 尝试列出已安装的语言包
+            import subprocess
+            cmd = [pytesseract.pytesseract.tesseract_cmd, '--list-langs']
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
+            if 'chi_sim' in result.stdout:
+                lang = 'chi_sim+eng'
+        except Exception:
+            pass
+        
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] 使用OCR提取PDF文本...")
+        else:
+            print(f"[{get_beijing_time()}] Using OCR to extract PDF text...")
+        
+        # 将PDF转换为图片
+        # 设置Poppler路径
+        poppler_path = os.environ.get('POPPLER_PATH')
+        if not poppler_path:
+            # 默认安装路径（winget安装）
+            local_appdata = os.environ.get('LOCALAPPDATA', 'C:\\Users\\Administrator\\AppData\\Local')
+            poppler_path = os.path.join(local_appdata, 'Microsoft', 'WinGet', 'Packages', 'oschwartz10612.Poppler_Microsoft.Winget.Source_8wekyb3d8bbwe', 'poppler-25.07.0', 'Library', 'bin')
+            if not os.path.exists(poppler_path):
+                poppler_path = None
+        
+        if poppler_path and os.path.exists(poppler_path):
+            images = convert_from_bytes(file_content, poppler_path=poppler_path)
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] 使用Poppler路径: {poppler_path}")
+        else:
+            images = convert_from_bytes(file_content)
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] 使用系统PATH中的Poppler")
+        
+        full_text = ""
+        for i, image in enumerate(images):
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] OCR识别第 {i+1}/{len(images)} 页...")
+            
+            text = pytesseract.image_to_string(image, lang=lang)
+            full_text += f"\n--- Page {i+1} ---\n"
+            full_text += text + "\n"
+        
+        return full_text.strip() if full_text.strip() else None
+        
+    except ImportError as e:
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] OCR依赖未安装: {e}")
+        else:
+            print(f"[{get_beijing_time()}] OCR dependency not installed: {e}")
+        return None
+    except Exception as e:
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] pdf2image OCR提取失败，尝试PyMuPDF: {str(e)}")
+        else:
+            print(f"[{get_beijing_time()}] pdf2image OCR extraction failed, trying PyMuPDF: {e}")
+        # 尝试使用PyMuPDF进行OCR
+        return extract_pdf_text_with_fitz_ocr(file_content, log_callback)
+
+
+def extract_pdf_text_with_fitz_ocr(file_content, log_callback=None):
+    """
+    使用PyMuPDF (fitz) 和 OCR 提取PDF文本
+    """
+    try:
+        import fitz  # PyMuPDF
+        from PIL import Image
+        import pytesseract
+        
+        # 设置Tesseract可执行文件路径
+        tesseract_path = os.environ.get('TESSERACT_PATH', 'C:\\Program Files\\Tesseract-OCR\\tesseract.exe')
+        if os.path.exists(tesseract_path):
+            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        else:
+            import shutil
+            tesseract_cmd = shutil.which('tesseract')
+            if tesseract_cmd:
+                pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        
+        # 检查中文语言包是否可用
+        lang = 'eng'  # 默认英语
+        try:
+            import subprocess
+            cmd = [pytesseract.pytesseract.tesseract_cmd, '--list-langs']
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
+            if 'chi_sim' in result.stdout:
+                lang = 'chi_sim+eng'
+        except Exception:
+            pass
+        
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] 使用PyMuPDF进行OCR提取...")
+        
+        # 打开PDF
+        doc = fitz.open(stream=file_content, filetype="pdf")
+        full_text = ""
+        
+        for page_num in range(len(doc)):
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] OCR识别第 {page_num+1}/{len(doc)} 页...")
+            
+            page = doc[page_num]
+            # 渲染页面为图像（300 DPI）
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2倍缩放
+            img_data = pix.tobytes("ppm")
+            
+            # 转换为PIL图像
+            import io
+            img = Image.open(io.BytesIO(img_data))
+            
+            # OCR识别
+            text = pytesseract.image_to_string(img, lang=lang)
+            full_text += f"\n--- Page {page_num+1} ---\n"
+            full_text += text + "\n"
+        
+        doc.close()
+        return full_text.strip() if full_text.strip() else None
+        
+    except ImportError as e:
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] PyMuPDF或OCR依赖未安装: {e}")
+        return None
+    except Exception as e:
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] PyMuPDF OCR提取失败: {str(e)}")
+        return None
+
+
 def extract_pdf_text(file_content):
     try:
         pdf_file = BytesIO(file_content)
@@ -139,22 +335,70 @@ def extract_pdf_text(file_content):
         
         return text.strip()
     except Exception as e:
-        print("PDF text extraction failed:", e)
+        # 安全输出，避免编码错误
+        try:
+            print("PDF text extraction failed:", e)
+        except Exception:
+            print("PDF text extraction failed: [Error message encoding error]")
         return None
 
 
-def handle_api_error(e):
-    if isinstance(e, requests.exceptions.HTTPError):
-        if e.response.status_code == 401:
-            print(f"API Error: Authentication failed (401 Unauthorized)")
-            print(f"Please check your DEEPSEEK_API_KEY is valid")
-        elif e.response.status_code == 429:
-            print(f"API Error: Rate limit exceeded (429 Too Many Requests)")
+def handle_api_error(e, log_callback=None):
+    error_msg = None
+    try:
+        if isinstance(e, requests.exceptions.HTTPError):
+            if e.response.status_code == 401:
+                error_msg = "API认证失败(401)，请检查API密钥是否有效"
+            elif e.response.status_code == 429:
+                error_msg = "API请求频率超限(429)，请稍后重试"
+            else:
+                # 安全处理响应文本，避免编码错误
+                try:
+                    response_text = e.response.text[:200]
+                    # 尝试解析JSON错误信息
+                    try:
+                        error_json = e.response.json()
+                        if isinstance(error_json, dict) and 'error' in error_json:
+                            error_detail = error_json['error']
+                            if isinstance(error_detail, dict) and 'message' in error_detail:
+                                error_message = error_detail['message']
+                                error_msg = f"API错误 HTTP {e.response.status_code}: {error_message}"
+                                
+                                # 针对特定错误类型提供更详细的解释
+                                if 'Content Exists Risk' in error_message:
+                                    error_msg += "\n可能原因：API认为内容存在风险（可能包含敏感内容）。\n建议：\n1. 检查PDF内容是否包含敏感信息\n2. 尝试处理其他PDF文件\n3. 或联系DeepSeek支持"
+                                elif 'invalid_request_error' in error_message:
+                                    error_msg += "\n可能原因：API请求格式错误。"
+                                else:
+                                    error_msg = f"API错误 HTTP {e.response.status_code}: {error_message}"
+                            else:
+                                error_msg = f"API错误 HTTP {e.response.status_code}: {response_text}"
+                        else:
+                            error_msg = f"API错误 HTTP {e.response.status_code}: {response_text}"
+                    except Exception:
+                        # 如果不是JSON，使用原始文本
+                        error_msg = f"API错误 HTTP {e.response.status_code}: {response_text}"
+                except Exception:
+                    error_msg = f"API错误 HTTP {e.response.status_code}"
         else:
-            print(f"API Error: HTTP {e.response.status_code} - {e.response.text[:200]}")
+            # 安全处理错误信息，避免编码错误
+            try:
+                error_msg = str(e)
+            except Exception:
+                error_msg = "API请求发生错误"
+    except Exception:
+        error_msg = "API请求发生未知错误"
+    
+    # 输出错误信息
+    if log_callback:
+        log_callback(f"[{get_beijing_time()}] {error_msg}")
     else:
-        print(f"API Error: {e}")
-    raise
+        try:
+            print(f"[{get_beijing_time()}] {error_msg}")
+        except Exception:
+            print(f"[{get_beijing_time()}] API Error (encoding issue)")
+    
+    return error_msg
 
 
 def compute_content_hash(content):
@@ -314,18 +558,89 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
         pdf_text = extract_pdf_text(file_content)
         extracted_text = pdf_text
         
-        if not pdf_text:
-            if log_callback:
-                log_callback(f"[{get_beijing_time()}] 无法提取PDF文本，尝试base64编码")
-            else:
-                print(f"[{get_beijing_time()}] Cannot extract PDF text, trying base64 encoding")
-            base64_data = base64.b64encode(file_content[:10000]).decode('utf-8')
-            content_text = prompt_template + "\n\nBelow is PDF file content (base64 encoded, please decode first):\n\ndata:application/pdf;base64," + base64_data
-        else:
-            pdf_text = truncate_content(pdf_text, max_content_length, "PDF text")
-            content_text = prompt_template + "\n\nBelow is PDF content:\n\n" + pdf_text
+        # 检查PDF文本提取是否成功
+        # 验证提取的内容是否是有效的文本（而非垃圾数据）
+        pdf_text = validate_extracted_text(pdf_text)
         
-        messages = [{"role": "user", "content": content_text}]
+        # 如果常规提取失败，尝试使用OCR
+        if not pdf_text or pdf_text.strip() == "" or len(pdf_text.strip()) < 50:
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] 常规PDF文本提取失败，尝试使用OCR...")
+            else:
+                print(f"[{get_beijing_time()}] Regular PDF text extraction failed, trying OCR...")
+            
+            # 尝试使用OCR提取文本
+            ocr_text = extract_pdf_text_with_ocr(file_content, log_callback)
+            
+            if ocr_text and len(ocr_text.strip()) >= 50:
+                # OCR提取成功
+                pdf_text = validate_extracted_text(ocr_text)
+                if pdf_text:
+                    if log_callback:
+                        log_callback(f"[{get_beijing_time()}] OCR提取成功，长度: {len(pdf_text)} 字符")
+                    else:
+                        print(f"[{get_beijing_time()}] OCR extraction successful, length: {len(pdf_text)} chars")
+                else:
+                    # OCR提取的内容无效
+                    if log_callback:
+                        log_callback(f"[{get_beijing_time()}] OCR提取的内容无效")
+                    else:
+                        print(f"[{get_beijing_time()}] OCR extracted content invalid")
+                    error_message = f"无法处理文件: {Path(file_path).name}\n原因: 无法提取PDF文本（扫描版PDF），OCR提取的内容无效\n解决方案:\n1. 安装OCR依赖: pip install pytesseract pdf2image pillow\n2. 下载Tesseract中文语言包\n3. 或手动转换为可编辑PDF"
+                    return error_message, None
+            else:
+                # OCR提取失败或未安装
+                if log_callback:
+                    log_callback(f"[{get_beijing_time()}] 无法提取PDF文本，可能是扫描版PDF且OCR不可用")
+                else:
+                    print(f"[{get_beijing_time()}] Cannot extract PDF text, may be scanned PDF and OCR unavailable")
+                error_message = f"无法处理文件: {Path(file_path).name}\n原因: 无法提取PDF文本（扫描版PDF）\n解决方案:\n1. 安装OCR依赖: pip install pytesseract pdf2image pillow\n2. 下载Tesseract中文语言包\n3. 或手动转换为可编辑PDF"
+                return error_message, None
+        
+        # 无论通过常规提取还是OCR，继续处理有效的pdf_text
+        pdf_text = truncate_content(pdf_text, max_content_length, "PDF text")
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] PDF文本提取成功，长度: {len(pdf_text)} 字符")
+        else:
+            print(f"[{get_beijing_time()}] PDF text extraction successful, length: {len(pdf_text)} chars")
+        
+        # 改进提示词，使用更清晰的消息结构
+        # 系统消息：简化的指令，强调学术和非政治性
+        system_message = """你是一个学术知识库笔记创建助手。你的任务是根据用户提供的文档内容，按照指定的格式要求创建结构化的知识库笔记。
+
+请注意：
+1. 这是一个纯粹的学术知识管理任务，不涉及任何政治立场或敏感话题
+2. 文档内容仅用于个人知识库建设
+3. 请专注于文档的信息结构和知识价值，不进行政治判断
+4. 输出应专业、客观、中立
+
+请根据文档内容创建知识库笔记。"""
+        
+        # 用户消息：使用传入的提示词模板，如果为空则使用默认格式
+        if prompt_template and prompt_template.strip():
+            # 使用传入的提示词模板
+            user_message = f"{prompt_template}\n\n请分析以下文档内容，并严格按照上述格式创建知识库笔记：\n\n文档内容：\n{pdf_text}"
+        else:
+            # 使用简化的格式要求作为后备
+            format_requirements = """请创建知识库笔记，严格遵循以下格式：
+
+1. 主标题（精准概括核心内容）
+2. 主题概述（120-150字，说明核心切入点、观点和结论）
+3. 结构化笔记（按内容逻辑分章节，用列表拆解核心信息）
+4. 核心要点（5-6条最具价值的结论或规律）
+5. 行动步骤（4-5条具体可落地的实践指南）
+6. 推荐归档路径（按「领域/细分方向/核心主题」层级格式）
+7. 关联主题（5个左右相关延伸方向）
+8. 复习提示（4条针对核心记忆点的快速回顾线索）
+9. 标签（8-10个精准关键词，用#连接）
+
+语言风格：专业、简洁、客观。输出纯Markdown格式。"""
+            user_message = f"{format_requirements}\n\n请分析以下文档内容，并严格按照上述格式创建知识库笔记：\n\n文档内容：\n{pdf_text}"
+        
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": user_message}
+        ]
         
     elif file_ext in ['.docx', '.doc']:
         if log_callback:
@@ -335,25 +650,98 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
         docx_text = extract_docx_text(file_content)
         extracted_text = docx_text
         
-        if not docx_text:
+        if not docx_text or docx_text.strip() == "" or len(docx_text.strip()) < 50:
             if log_callback:
-                log_callback(f"[{get_beijing_time()}] 无法提取Word文本，尝试base64编码")
+                log_callback(f"[{get_beijing_time()}] 无法提取Word文本或文本太短")
+                log_callback(f"[{get_beijing_time()}] 提取到的文本长度: {len(docx_text) if docx_text else 0} 字符")
             else:
-                print(f"[{get_beijing_time()}] Cannot extract Word text, trying base64 encoding")
-            base64_data = base64.b64encode(file_content[:10000]).decode('utf-8')
-            content_text = prompt_template + "\n\nBelow is Word document content (base64 encoded, please decode first):\n\ndata:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64_data
+                print(f"[{get_beijing_time()}] Cannot extract Word text or text too short")
+                print(f"[{get_beijing_time()}] Extracted text length: {len(docx_text) if docx_text else 0} chars")
+            error_message = f"无法处理文件: {Path(file_path).name}\n原因: 无法提取Word文档文本或文本太短\n请尝试转换为其他格式后再处理"
+            return error_message, None
         else:
             docx_text = truncate_content(docx_text, max_content_length, "Word text")
-            content_text = prompt_template + "\n\nBelow is Word document content:\n\n" + docx_text
-        
-        messages = [{"role": "user", "content": content_text}]
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] Word文本提取成功，长度: {len(docx_text)} 字符")
+            else:
+                print(f"[{get_beijing_time()}] Word text extraction successful, length: {len(docx_text)} chars")
+            # 使用简化的系统消息
+            system_message = "你是一个知识库笔记创建助手。请根据用户提供的文档内容，按照指定的格式要求创建结构化的知识库笔记。"
+            
+            # 用户消息：使用传入的提示词模板，如果为空则使用默认格式
+            if prompt_template and prompt_template.strip():
+                # 使用传入的提示词模板
+                user_message = f"{prompt_template}\n\n请分析以下文档内容，并严格按照上述格式创建知识库笔记：\n\n文档内容：\n{docx_text}"
+            else:
+                # 使用简化的格式要求作为后备
+                format_requirements = """请创建知识库笔记，严格遵循以下格式：
+
+1. 主标题（精准概括核心内容）
+2. 主题概述（120-150字，说明核心切入点、观点和结论）
+3. 结构化笔记（按内容逻辑分章节，用列表拆解核心信息）
+4. 核心要点（5-6条最具价值的结论或规律）
+5. 行动步骤（4-5条具体可落地的实践指南）
+6. 推荐归档路径（按「领域/细分方向/核心主题」层级格式）
+7. 关联主题（5个左右相关延伸方向）
+8. 复习提示（4条针对核心记忆点的快速回顾线索）
+9. 标签（8-10个精准关键词，用#连接）
+
+语言风格：专业、简洁、客观。输出纯Markdown格式。"""
+                user_message = f"{format_requirements}\n\n请分析以下文档内容，并严格按照上述格式创建知识库笔记：\n\n文档内容：\n{docx_text}"
+            
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ]
         
     elif file_ext in ['.txt', '.md']:
         text_content = file_content.decode('utf-8', errors='ignore')
         extracted_text = text_content
-        text_content = truncate_content(text_content, max_content_length, "Text content")
-        content_text = prompt_template + "\n\nBelow is text content:\n\n" + text_content
-        messages = [{"role": "user", "content": content_text}]
+        
+        # 检查文本是否有效
+        if not text_content or text_content.strip() == "" or len(text_content.strip()) < 50:
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] 文本内容太短或为空")
+                log_callback(f"[{get_beijing_time()}] 文本长度: {len(text_content) if text_content else 0} 字符")
+            else:
+                print(f"[{get_beijing_time()}] Text content too short or empty")
+                print(f"[{get_beijing_time()}] Text length: {len(text_content) if text_content else 0} chars")
+            error_message = f"无法处理文件: {Path(file_path).name}\n原因: 文本内容太短或为空\n请提供有效的文本内容"
+            return error_message, None
+        else:
+            text_content = truncate_content(text_content, max_content_length, "Text content")
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] 文本内容有效，长度: {len(text_content)} 字符")
+            else:
+                print(f"[{get_beijing_time()}] Text content valid, length: {len(text_content)} chars")
+            # 使用简化的系统消息
+            system_message = "你是一个知识库笔记创建助手。请根据用户提供的文档内容，按照指定的格式要求创建结构化的知识库笔记。"
+            
+            # 用户消息：使用传入的提示词模板，如果为空则使用默认格式
+            if prompt_template and prompt_template.strip():
+                # 使用传入的提示词模板
+                user_message = f"{prompt_template}\n\n请分析以下文档内容，并严格按照上述格式创建知识库笔记：\n\n文档内容：\n{text_content}"
+            else:
+                # 使用简化的格式要求作为后备
+                format_requirements = """请创建知识库笔记，严格遵循以下格式：
+
+1. 主标题（精准概括核心内容）
+2. 主题概述（120-150字，说明核心切入点、观点和结论）
+3. 结构化笔记（按内容逻辑分章节，用列表拆解核心信息）
+4. 核心要点（5-6条最具价值的结论或规律）
+5. 行动步骤（4-5条具体可落地的实践指南）
+6. 推荐归档路径（按「领域/细分方向/核心主题」层级格式）
+7. 关联主题（5个左右相关延伸方向）
+8. 复习提示（4条针对核心记忆点的快速回顾线索）
+9. 标签（8-10个精准关键词，用#连接）
+
+语言风格：专业、简洁、客观。输出纯Markdown格式。"""
+                user_message = f"{format_requirements}\n\n请分析以下文档内容，并严格按照上述格式创建知识库笔记：\n\n文档内容：\n{text_content}"
+            
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ]
     
     elif file_ext in ['.jpg', '.jpeg', '.png']:
         if log_callback:
@@ -365,14 +753,42 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
         base64_data = base64.b64encode(file_content).decode('utf-8')
         mime_type = 'image/jpeg' if file_ext in ['.jpg', '.jpeg'] else 'image/png'
         
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt_template},
-                {"type": "text", "text": "Please analyze the following image content and organize it as required:"},
-                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}}
-            ]
-        }]
+        # 使用简化的系统消息
+        system_message = "你是一个知识库笔记创建助手。请根据用户提供的图片内容，按照指定的格式要求创建结构化的知识库笔记。"
+        
+        # 用户消息：使用传入的提示词模板，如果为空则使用默认格式
+        if prompt_template and prompt_template.strip():
+            # 使用传入的提示词模板
+            text_prompt = f"{prompt_template}\n\n请分析以下图片内容，并严格按照上述格式创建知识库笔记："
+        else:
+            # 使用简化的格式要求作为后备
+            format_requirements = """请创建知识库笔记，严格遵循以下格式：
+
+1. 主标题（精准概括核心内容）
+2. 主题概述（120-150字，说明核心切入点、观点和结论）
+3. 结构化笔记（按内容逻辑分章节，用列表拆解核心信息）
+4. 核心要点（5-6条最具价值的结论或规律）
+5. 行动步骤（4-5条具体可落地的实践指南）
+6. 推荐归档路径（按「领域/细分方向/核心主题」层级格式）
+7. 关联主题（5个左右相关延伸方向）
+8. 复习提示（4条针对核心记忆点的快速回顾线索）
+9. 标签（8-10个精准关键词，用#连接）
+
+语言风格：专业、简洁、客观。输出纯Markdown格式。"""
+            text_prompt = f"{format_requirements}\n\n请分析以下图片内容，并严格按照上述格式创建知识库笔记："
+        
+        user_content = [
+            {"type": "text", "text": text_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}}
+        ]
+        
+        messages = [
+            {"role": "system", "content": system_message},
+            {
+                "role": "user",
+                "content": user_content
+            }
+        ]
         extracted_text = base64_data[:1000]
     
     else:
@@ -380,7 +796,8 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
             log_callback(f"[{get_beijing_time()}] 不支持的文件类型: {file_ext}")
         else:
             print(f"[{get_beijing_time()}] Unsupported file type: {file_ext}")
-        return None, None
+        error_message = f"无法处理文件: {Path(file_path).name}\n原因: 不支持的文件类型 {file_ext}"
+        return error_message, None
     
     payload = {
         "model": api_model,
@@ -390,10 +807,16 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
     }
     
     try:
+        # 安全处理文件名，避免编码错误
+        file_name = str(Path(file_path).name)
         if log_callback:
-            log_callback(f"[{get_beijing_time()}] 调用API处理: {Path(file_path).name}")
+            log_callback(f"[{get_beijing_time()}] 调用API处理: {file_name}")
         else:
-            print(f"[{get_beijing_time()}] Calling API to process: {Path(file_path).name}")
+            # 安全输出，避免编码错误
+            try:
+                print(f"[{get_beijing_time()}] Calling API to process: {file_name}")
+            except Exception:
+                print(f"[{get_beijing_time()}] Calling API to process: [File name encoding error]")
         # 确保 payload 中的中文字符被正确编码
         import json
         response = requests.post(
@@ -406,7 +829,8 @@ def process_file_with_deepseek(api_key, file_path, prompt_template, api_model="d
         result = response.json()
         return result['choices'][0]['message']['content'], extracted_text
     except Exception as e:
-        handle_api_error(e)
+        error_message = handle_api_error(e, log_callback)
+        return error_message, None
 
 
 def validate_config():
@@ -414,9 +838,9 @@ def validate_config():
     
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
-        print("Error: DEEPSEEK_API_KEY not found in environment variables or .env file")
-        print("Please set DEEPSEEK_API_KEY in .env file or environment variable")
-        sys.exit(1)
+        # 当作为模块使用时，不要退出，而是抛出异常
+        # 这样调用者可以决定如何处理
+        raise ValueError("DEEPSEEK_API_KEY not found in environment variables or .env file. Please set DEEPSEEK_API_KEY in .env file or environment variable.")
     config['api_key'] = api_key
     
     config['input_dir'] = os.environ.get("INPUT_DIR", "knowledge_input")
@@ -440,8 +864,7 @@ def validate_config():
         config['enable_quality_scoring'] = os.environ.get("ENABLE_QUALITY_SCORING", "true").lower() == "true"
         
     except ValueError as e:
-        print(f"Error: Invalid configuration value: {e}")
-        sys.exit(1)
+        raise ValueError(f"Invalid configuration value: {e}")
     
     if config['max_tokens'] < 100 or config['max_tokens'] > 16000:
         print("Warning: MAX_TOKENS should be between 100 and 16000")
@@ -483,10 +906,12 @@ def process_single_file_task(file_path, config, prompt_template, lock, log_callb
             return result
     
     try:
+        # 安全处理文件名，避免编码错误
+        file_name = str(file_path.name)
         if log_callback:
-            log_callback(f"[{get_beijing_time()}] 处理中: {file_path.name}")
+            log_callback(f"[{get_beijing_time()}] 处理中: {file_name}")
         else:
-            print(f"[{get_beijing_time()}] Processing: {file_path.name}")
+            print(f"[{get_beijing_time()}] Processing: {file_name}")
         
         api_result, extracted_text = process_file_with_deepseek(
             config['api_key'],
@@ -501,6 +926,34 @@ def process_single_file_task(file_path, config, prompt_template, lock, log_callb
         
         if not api_result:
             result["error"] = "No result from API"
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] 处理失败: {file_name} - No result from API")
+            else:
+                print(f"[{get_beijing_time()}] Processing failed: {file_name} - No result from API")
+            return result
+        
+        # 检查api_result是否为错误信息
+        if api_result.startswith("无法处理文件:"):
+            # 这是错误信息，保存为错误文件
+            filename = f"{file_path.stem}_error.md"
+            output_path = Path(config['output_dir'])
+            output_file = output_path / filename
+            count = 1
+            while output_file.exists():
+                filename = f"{file_path.stem}_error_{count}.md"
+                output_file = output_path / filename
+                count += 1
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(api_result)
+            
+            result["success"] = False
+            result["error"] = api_result
+            result["output_filename"] = filename
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] 处理失败: {file_name} - 已保存错误信息")
+            else:
+                print(f"[{get_beijing_time()}] Processing failed: {file_name} - Error saved")
             return result
         
         title = extract_main_title(api_result)
@@ -530,23 +983,61 @@ def process_single_file_task(file_path, config, prompt_template, lock, log_callb
         if config['enable_quality_scoring']:
             result["quality_score"] = score_content_quality(api_result)
         
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] 成功处理: {file_name} - 保存为: {filename}")
+        else:
+            print(f"[{get_beijing_time()}] Successfully processed: {file_name} - Saved as: {filename}")
+        
     except Exception as e:
-        result["error"] = str(e)
+        # 安全处理错误信息，避免编码错误
+        try:
+            error_msg = str(e)
+        except Exception:
+            error_msg = f"Error occurred but cannot convert to string: {type(e).__name__}"
+        
+        result["error"] = error_msg
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] 处理失败: {file_name} - {error_msg}")
+        else:
+            # 安全输出，避免编码错误
+            try:
+                print(f"[{get_beijing_time()}] Processing failed: {file_name} - {error_msg}")
+            except Exception:
+                print(f"[{get_beijing_time()}] Processing failed: {file_name} - [Error message encoding error]")
     
     return result
 
 
 def main(log_callback=None, config=None):
-    # 如果没有传入config，则从环境变量读取
-    if config is None:
-        config = validate_config()
-    
-    api_key = config['api_key']
-    input_dir = config['input_dir']
-    output_dir = config['output_dir']
-    
-    output_path = Path(output_dir)
-    output_path.mkdir(exist_ok=True)
+    try:
+        # 如果没有传入config，则从环境变量读取
+        if config is None:
+            config = validate_config()
+        
+        # 验证config是否包含必要字段
+        required_fields = ['api_key', 'input_dir', 'output_dir', 'api_model', 'max_tokens', 
+                          'temperature', 'api_delay', 'max_content_length', 'concurrent_processing',
+                          'max_workers', 'incremental_processing', 'enable_deduplication',
+                          'enable_quality_scoring']
+        
+        for field in required_fields:
+            if field not in config:
+                raise ValueError(f"Missing required config field: {field}")
+        
+        api_key = config['api_key']
+        input_dir = config['input_dir']
+        output_dir = config['output_dir']
+        
+        output_path = Path(output_dir)
+        output_path.mkdir(exist_ok=True)
+         
+    except Exception as e:
+        error_msg = f"配置错误: {str(e)}"
+        if log_callback:
+            log_callback(f"[{get_beijing_time()}] {error_msg}")
+        else:
+            print(f"[{get_beijing_time()}] {error_msg}")
+        return
     
     prompt_template = read_prompt_template()
     if log_callback:
@@ -608,13 +1099,15 @@ def main(log_callback=None, config=None):
     
     files_to_process = []
     for file_path in all_files:
+        # 安全处理文件名，避免编码错误
+        file_name = str(file_path.name)
         with lock:
             if config['incremental_processing'] and not is_file_modified(file_path, state):
                 if log_callback:
-                    log_callback(f"[{get_beijing_time()}] 跳过（已处理）: {file_path.name}")
+                    log_callback(f"[{get_beijing_time()}] 跳过（已处理）: {file_name}")
                 else:
-                    print(f"[{get_beijing_time()}] Skipping (already processed): {file_path.name}")
-                skipped_files.append((file_path.name, "Already processed"))
+                    print(f"[{get_beijing_time()}] Skipping (already processed): {file_name}")
+                skipped_files.append((file_name, "Already processed"))
                 continue
             
             files_to_process.append(file_path)
@@ -691,29 +1184,43 @@ def main(log_callback=None, config=None):
             }
             
             # 新增：进度条
-            if tqdm:
-                for future in tqdm(as_completed(futures), total=len(futures), desc="Processing files"):
+            # 使用log_callback输出进度，避免tqdm输出导致的编码问题
+            processed_count = 0
+            total_count = len(futures)
+            
+            for future in as_completed(futures):
+                processed_count += 1
+                progress_pct = int(processed_count / total_count * 100)
+                progress_bar = "=" * int(progress_pct / 5) + ">" + " " * (20 - int(progress_pct / 5))
+                
+                progress_msg = f"Processing files: {progress_pct}%|[{progress_bar}]| {processed_count}/{total_count}"
+                if log_callback:
+                    log_callback(f"[{get_beijing_time()}] {progress_msg}")
+                else:
+                    print(f"[{get_beijing_time()}] {progress_msg}")
                     file_path = futures[future]
+                    # 安全处理文件名，避免编码错误
+                    file_name = str(file_path.name)
                     try:
                         result = future.result()
                         
                         if result["success"]:
                             if log_callback:
-                                log_callback(f"[{get_beijing_time()}] 成功处理: {file_path.name}")
+                                log_callback(f"[{get_beijing_time()}] 成功处理: {file_name}")
                                 log_callback(f"[{get_beijing_time()}] 保存为: {result['output_filename']}")
                                 if result.get("quality_score"):
                                     qs = result["quality_score"]
                                     log_callback(f"[{get_beijing_time()}] 质量评分: {qs['overall']}/10 (结构: {qs['structure']}, 完整性: {qs['completeness']}, 可读性: {qs['readability']})")
                             else:
                                 print(f"\n{'='*50}")
-                                print(f"[{get_beijing_time()}] Successfully processed: {file_path.name}")
+                                print(f"[{get_beijing_time()}] Successfully processed: {file_name}")
                                 print(f"[{get_beijing_time()}] Saved as: {result['output_filename']}")
                                 
                                 if result.get("quality_score"):
                                     qs = result["quality_score"]
                                     print(f"[{get_beijing_time()}] Quality Score: {qs['overall']}/10 (Structure: {qs['structure']}, Completeness: {qs['completeness']}, Readability: {qs['readability']})")
                             
-                            processed_files.append((file_path.name, result["output_filename"], result.get("quality_score")))
+                            processed_files.append((file_name, result["output_filename"], result.get("quality_score")))
                             
                             with lock:
                                 state["processed_files"][str(file_path)] = {
@@ -729,43 +1236,45 @@ def main(log_callback=None, config=None):
                             
                         else:
                             if log_callback:
-                                log_callback(f"[{get_beijing_time()}] 处理失败: {file_path.name} - {result['error']}")
+                                log_callback(f"[{get_beijing_time()}] 处理失败: {file_name} - {result['error']}")
                             else:
                                 print(f"\n{'='*50}")
-                                print(f"[{get_beijing_time()}] Failed to process: {file_path.name}")
+                                print(f"[{get_beijing_time()}] Failed to process: {file_name}")
                                 print(f"[{get_beijing_time()}] Error: {result['error']}")
-                            failed_files.append(file_path.name)
+                            failed_files.append(file_name)
                             
                     except Exception as e:
                         if log_callback:
-                            log_callback(f"[{get_beijing_time()}] 任务失败: {file_path.name} - {str(e)}")
+                            log_callback(f"[{get_beijing_time()}] 任务失败: {file_name} - {str(e)}")
                         else:
-                            print(f"[{get_beijing_time()}] Task failed for {file_path.name}: {e}")
-                        failed_files.append(file_path.name)
+                            print(f"[{get_beijing_time()}] Task failed for {file_name}: {e}")
+                        failed_files.append(file_name)
             else:
                 # 没有 tqdm 时的处理
                 for future in as_completed(futures):
                     file_path = futures[future]
+                    # 安全处理文件名，避免编码错误
+                    file_name = str(file_path.name)
                     try:
                         result = future.result()
                         
                         if result["success"]:
                             if log_callback:
-                                log_callback(f"[{get_beijing_time()}] 成功处理: {file_path.name}")
+                                log_callback(f"[{get_beijing_time()}] 成功处理: {file_name}")
                                 log_callback(f"[{get_beijing_time()}] 保存为: {result['output_filename']}")
                                 if result.get("quality_score"):
                                     qs = result["quality_score"]
                                     log_callback(f"[{get_beijing_time()}] 质量评分: {qs['overall']}/10 (结构: {qs['structure']}, 完整性: {qs['completeness']}, 可读性: {qs['readability']})")
                             else:
                                 print(f"\n{'='*50}")
-                                print(f"[{get_beijing_time()}] Successfully processed: {file_path.name}")
+                                print(f"[{get_beijing_time()}] Successfully processed: {file_name}")
                                 print(f"[{get_beijing_time()}] Saved as: {result['output_filename']}")
                                 
                                 if result.get("quality_score"):
                                     qs = result["quality_score"]
                                     print(f"[{get_beijing_time()}] Quality Score: {qs['overall']}/10 (Structure: {qs['structure']}, Completeness: {qs['completeness']}, Readability: {qs['readability']})")
                             
-                            processed_files.append((file_path.name, result["output_filename"], result.get("quality_score")))
+                            processed_files.append((file_name, result["output_filename"], result.get("quality_score")))
                             
                             with lock:
                                 state["processed_files"][str(file_path)] = {
@@ -781,19 +1290,19 @@ def main(log_callback=None, config=None):
                             
                         else:
                             if log_callback:
-                                log_callback(f"[{get_beijing_time()}] 处理失败: {file_path.name} - {result['error']}")
+                                log_callback(f"[{get_beijing_time()}] 处理失败: {file_name} - {result['error']}")
                             else:
                                 print(f"\n{'='*50}")
-                                print(f"[{get_beijing_time()}] Failed to process: {file_path.name}")
+                                print(f"[{get_beijing_time()}] Failed to process: {file_name}")
                                 print(f"[{get_beijing_time()}] Error: {result['error']}")
-                            failed_files.append(file_path.name)
+                            failed_files.append(file_name)
                             
                     except Exception as e:
                         if log_callback:
-                            log_callback(f"[{get_beijing_time()}] 任务失败: {file_path.name} - {str(e)}")
+                            log_callback(f"[{get_beijing_time()}] 任务失败: {file_name} - {str(e)}")
                         else:
-                            print(f"[{get_beijing_time()}] Task failed for {file_path.name}: {e}")
-                        failed_files.append(file_path.name)
+                            print(f"[{get_beijing_time()}] Task failed for {file_name}: {e}")
+                        failed_files.append(file_name)
     
     else:
         if log_callback:
@@ -802,14 +1311,28 @@ def main(log_callback=None, config=None):
             print(f"[{get_beijing_time()}] Starting sequential processing...")
         
         # 新增：进度条
-        if tqdm:
-            for file_path in tqdm(files_to_process, desc="Processing files"):
+        # 使用log_callback输出进度，避免tqdm输出导致的编码问题
+        processed_count = 0
+        total_count = len(files_to_process)
+        
+        for file_path in files_to_process:
+            processed_count += 1
+            progress_pct = int(processed_count / total_count * 100)
+            progress_bar = "=" * int(progress_pct / 5) + ">" + " " * (20 - int(progress_pct / 5))
+            
+            progress_msg = f"Processing files: {progress_pct}%|[{progress_bar}]| {processed_count}/{total_count}"
+            if log_callback:
+                log_callback(f"[{get_beijing_time()}] {progress_msg}")
+            else:
+                print(f"[{get_beijing_time()}] {progress_msg}")
+                # 安全处理文件名，避免编码错误
+                file_name = str(file_path.name)
                 try:
                     if log_callback:
-                        log_callback(f"[{get_beijing_time()}] 处理文件: {file_path.name}")
+                        log_callback(f"[{get_beijing_time()}] 处理文件: {file_name}")
                     else:
                         print(f"\n{'='*50}")
-                        print(f"[{get_beijing_time()}] Processing file: {file_path.name}")
+                        print(f"[{get_beijing_time()}] Processing file: {file_name}")
                     
                     result = process_single_file_task(file_path, config, prompt_template, lock, log_callback)
                     
@@ -826,7 +1349,7 @@ def main(log_callback=None, config=None):
                                 qs = result["quality_score"]
                                 print(f"Quality Score: {qs['overall']}/10 (Structure: {qs['structure']}, Completeness: {qs['completeness']}, Readability: {qs['readability']})")
                         
-                        processed_files.append((file_path.name, result["output_filename"], result.get("quality_score")))
+                        processed_files.append((file_name, result["output_filename"], result.get("quality_score")))
                         
                         state["processed_files"][str(file_path)] = {
                             "processed_at": time.time(),
@@ -841,29 +1364,31 @@ def main(log_callback=None, config=None):
                         
                     else:
                         if log_callback:
-                            log_callback(f"处理失败: {file_path.name} - {result['error']}")
+                            log_callback(f"处理失败: {file_name} - {result['error']}")
                         else:
                             print(f"Failed: {result['error']}")
-                        failed_files.append(file_path.name)
+                        failed_files.append(file_name)
                     
                     if not config['concurrent_processing']:
                         time.sleep(config['api_delay'])
                     
                 except Exception as e:
                     if log_callback:
-                        log_callback(f"处理失败: {file_path.name} - {str(e)}")
+                        log_callback(f"处理失败: {file_name} - {str(e)}")
                     else:
                         print(f"Failed: {e}")
-                    failed_files.append(file_path.name)
+                    failed_files.append(file_name)
         else:
             # 没有 tqdm 时的处理
             for file_path in files_to_process:
+                # 安全处理文件名，避免编码错误
+                file_name = str(file_path.name)
                 try:
                     if log_callback:
-                        log_callback(f"[{get_beijing_time()}] 处理文件: {file_path.name}")
+                        log_callback(f"[{get_beijing_time()}] 处理文件: {file_name}")
                     else:
                         print(f"\n{'='*50}")
-                        print(f"[{get_beijing_time()}] Processing file: {file_path.name}")
+                        print(f"[{get_beijing_time()}] Processing file: {file_name}")
                     
                     result = process_single_file_task(file_path, config, prompt_template, lock, log_callback)
                     
@@ -880,7 +1405,7 @@ def main(log_callback=None, config=None):
                                 qs = result["quality_score"]
                                 print(f"Quality Score: {qs['overall']}/10 (Structure: {qs['structure']}, Completeness: {qs['completeness']}, Readability: {qs['readability']})")
                         
-                        processed_files.append((file_path.name, result["output_filename"], result.get("quality_score")))
+                        processed_files.append((file_name, result["output_filename"], result.get("quality_score")))
                         
                         state["processed_files"][str(file_path)] = {
                             "processed_at": time.time(),
@@ -895,20 +1420,20 @@ def main(log_callback=None, config=None):
                         
                     else:
                         if log_callback:
-                            log_callback(f"处理失败: {file_path.name} - {result['error']}")
+                            log_callback(f"处理失败: {file_name} - {result['error']}")
                         else:
                             print(f"Failed: {result['error']}")
-                        failed_files.append(file_path.name)
+                        failed_files.append(file_name)
                     
                     if not config['concurrent_processing']:
                         time.sleep(config['api_delay'])
                     
                 except Exception as e:
                     if log_callback:
-                        log_callback(f"处理失败: {file_path.name} - {str(e)}")
+                        log_callback(f"处理失败: {file_name} - {str(e)}")
                     else:
                         print(f"Failed: {e}")
-                    failed_files.append(file_path.name)
+                    failed_files.append(file_name)
     
     # 生成处理报告
     report_path = output_path / "processing_report.md"
@@ -941,33 +1466,33 @@ def main(log_callback=None, config=None):
         f.write(f"- Failed: {len(failed_files)} files\n")
     
     # 生成统计图表
-        generate_statistics_chart(all_files, skipped_files, processed_files, failed_files, output_dir, log_callback)
+    generate_statistics_chart(all_files, skipped_files, processed_files, failed_files, output_dir, log_callback)
+    
+    if log_callback:
+        log_callback(f"[{get_beijing_time()}] 处理完成！")
+        log_callback(f"[{get_beijing_time()}] 输出目录: {output_dir}")
+        log_callback(f"[{get_beijing_time()}] 处理报告: {report_path}")
         
-        if log_callback:
-            log_callback(f"[{get_beijing_time()}] 处理完成！")
-            log_callback(f"[{get_beijing_time()}] 输出目录: {output_dir}")
-            log_callback(f"[{get_beijing_time()}] 处理报告: {report_path}")
-            
-            if processed_files:
-                log_callback(f"[{get_beijing_time()}] \n生成的 Markdown 文件:")
-                for _, output_name, _ in processed_files:
-                    log_callback(f"[{get_beijing_time()}]   - {output_name}")
-        else:
-            print(f"\n{'='*50}")
-            print(f"[{get_beijing_time()}] Processing completed!")
-            print(f"[{get_beijing_time()}] Output directory: {output_dir}")
-            print(f"[{get_beijing_time()}] Processing report: {report_path}")
-            
-            if processed_files:
-                print(f"[{get_beijing_time()}] \nGenerated Markdown files:")
-                for _, output_name, _ in processed_files:
-                    print(f"[{get_beijing_time()}]   - {output_name}")
-
-
-if __name__ == "__main__":
-    main()
+        if processed_files:
+            log_callback(f"[{get_beijing_time()}] \n生成的 Markdown 文件:")
+            for _, output_name, _ in processed_files:
+                log_callback(f"[{get_beijing_time()}]   - {output_name}")
+    else:
+        print(f"\n{'='*50}")
+        print(f"[{get_beijing_time()}] Processing completed!")
+        print(f"[{get_beijing_time()}] Output directory: {output_dir}")
+        print(f"[{get_beijing_time()}] Processing report: {report_path}")
+        
+        if processed_files:
+            print(f"[{get_beijing_time()}] \nGenerated Markdown files:")
+            for _, output_name, _ in processed_files:
+                print(f"[{get_beijing_time()}]   - {output_name}")
 
 
 def process_files(config, log_callback=None):
     """Process files with the given configuration"""
     main(log_callback, config)
+
+
+if __name__ == "__main__":
+    main()

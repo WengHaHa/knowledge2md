@@ -98,27 +98,29 @@ def init_db():
 # 保存配置
 @app.post("/api/config")
 async def save_config(config: Config):
-    # 保存到数据库
-    import os
-    db_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge2md.db")
-    conn = sqlite3.connect(db_file_path)
-    cursor = conn.cursor()
-    cursor.execute('''
-    INSERT INTO config (api_key, input_dir, output_dir, concurrent_processing, max_workers, incremental_processing, enable_deduplication, enable_quality_scoring)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        config.apiKey,
-        config.inputDir,
-        config.outputDir,
-        1 if config.concurrentProcessing else 0,
-        config.maxWorkers,
-        1 if config.incrementalProcessing else 0,
-        1 if config.enableDeduplication else 0,
-        1 if config.enableQualityScoring else 0
-    ))
-    conn.commit()
-    conn.close()
+    # 使用线程池执行同步的数据库操作
+    def save_to_db():
+        import os
+        db_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge2md.db")
+        conn = sqlite3.connect(db_file_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+        INSERT INTO config (api_key, input_dir, output_dir, concurrent_processing, max_workers, incremental_processing, enable_deduplication, enable_quality_scoring)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            config.apiKey,
+            config.inputDir,
+            config.outputDir,
+            1 if config.concurrentProcessing else 0,
+            config.maxWorkers,
+            1 if config.incrementalProcessing else 0,
+            1 if config.enableDeduplication else 0,
+            1 if config.enableQualityScoring else 0
+        ))
+        conn.commit()
+        conn.close()
     
+    await asyncio.to_thread(save_to_db)
     return {"message": "配置保存成功"}
 
 # 处理文件
@@ -128,6 +130,8 @@ async def process_files_background():
     processing_state["progress"] = 0
     processing_state["status"] = "开始处理"
     processing_state["log"] = []
+    
+    print(f"[{get_beijing_time()}] 开始处理文件...")
     
     try:
         # 从数据库中读取最新配置
@@ -144,12 +148,14 @@ async def process_files_background():
         config_row = cursor.fetchone()
         conn.close()
         
+        print(f"[{get_beijing_time()}] 读取配置: {config_row}")
+        
         # 读取配置
         if config_row:
             config = {
                 "api_key": config_row[0],
-                "input_dir": config_row[1] or "knowledge_base_link",
-                "output_dir": config_row[2] or "processed_knowledge",
+                "input_dir": config_row[1] or "knowledge_input",
+                "output_dir": config_row[2] or "knowledge_output",
                 "concurrent_processing": bool(config_row[3]),
                 "max_workers": config_row[4] or 3,
                 "incremental_processing": bool(config_row[5]),
@@ -179,19 +185,54 @@ async def process_files_background():
                 "max_content_length": 50000
             }
         
+        print(f"[{get_beijing_time()}] 配置: {config}")
+        
+        # 检查输入目录是否存在
+        import os
+        input_dir = config['input_dir']
+        output_dir = config['output_dir']
+        print(f"[{get_beijing_time()}] 输入目录: {input_dir}")
+        print(f"[{get_beijing_time()}] 输入目录存在: {os.path.exists(input_dir)}")
+        print(f"[{get_beijing_time()}] 输出目录: {output_dir}")
+        print(f"[{get_beijing_time()}] 输出目录存在: {os.path.exists(output_dir)}")
+        
+        # 列出输入目录中的文件
+        if os.path.exists(input_dir):
+            files = os.listdir(input_dir)
+            print(f"[{get_beijing_time()}] 输入目录中的文件: {files}")
+        
         # 处理文件
         def log_callback(message):
-            timestamped_message = f"[{get_beijing_time()}] {message}"
-            processing_state["log"].append(timestamped_message)
+            # 消息已经包含时间戳，直接添加
+            processing_state["log"].append(message)
+            print(f"[{get_beijing_time()}] 日志: {message}")
             # 简单的进度计算
             if "处理中" in message:
                 processing_state["progress"] += 5
                 if processing_state["progress"] > 100:
                     processing_state["progress"] = 100
-            processing_state["status"] = message.split(':')[0] if ':' in message else message
+            # 提取状态信息，只保留关键状态
+            if message.startswith('['):
+                # 移除时间戳，提取状态
+                status_part = message.split('] ')[1]
+                if ':' in status_part:
+                    processing_state["status"] = status_part.split(':')[0]
+                else:
+                    processing_state["status"] = status_part
+            else:
+                processing_state["status"] = message.split(':')[0] if ':' in message else message
         
         # 调用处理器
-        await asyncio.to_thread(process_files, config, log_callback)
+        print(f"[{get_beijing_time()}] 调用process_files...")
+        try:
+            await asyncio.to_thread(process_files, config, log_callback)
+            print(f"[{get_beijing_time()}] process_files 调用成功")
+        except Exception as e:
+            print(f"[{get_beijing_time()}] process_files 调用失败: {e}")
+            import traceback
+            traceback.print_exc()
+            if log_callback:
+                log_callback(f"处理失败: {str(e)}")
         
         processing_state["status"] = "处理完成"
         processing_state["progress"] = 100
@@ -213,14 +254,40 @@ async def start_processing():
     
     # 流式响应
     async def event_stream():
+        # 发送初始消息
+        yield f"data: {json.dumps({
+            'log': '开始处理...',
+            'progress': 0,
+            'status': '开始处理',
+            'completed': False
+        })}\n\n"
+        
+        # 发送处理过程中的日志
+        log_index = 0
         while processing_state["is_running"]:
-            yield f"data: {json.dumps({
-                'log': processing_state['log'][-1] if processing_state['log'] else '',
-                'progress': processing_state['progress'],
-                'status': processing_state['status'],
-                'completed': not processing_state['is_running']
-            })}\n\n"
-            await asyncio.sleep(1)
+            if len(processing_state['log']) > log_index:
+                for log in processing_state['log'][log_index:]:
+                    yield f"data: {json.dumps({
+                        'log': log,
+                        'progress': processing_state['progress'],
+                        'status': processing_state['status'],
+                        'completed': not processing_state['is_running']
+                    })}\n\n"
+                    await asyncio.sleep(0.1)
+                log_index = len(processing_state['log'])
+            await asyncio.sleep(0.5)
+        
+        # 发送剩余的日志
+        if len(processing_state['log']) > log_index:
+            for log in processing_state['log'][log_index:]:
+                yield f"data: {json.dumps({
+                    'log': log,
+                    'progress': processing_state['progress'],
+                    'status': processing_state['status'],
+                    'completed': True
+                })}\n\n"
+                await asyncio.sleep(0.1)
+        
         # 发送完成消息
         yield f"data: {json.dumps({
             'log': '处理完成',

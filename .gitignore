@@ -38,7 +38,7 @@ env/
 # Output directories
 .processing_state.json
 knowledge_output/
-knowledge_input/
+
 
 
 # Node.js

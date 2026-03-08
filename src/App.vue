@@ -52,7 +52,7 @@
           <button @click="startProcessing" :disabled="isProcessing" class="primary-button">开始处理</button>
           <button @click="stopProcessing" :disabled="!isProcessing" class="danger-button">停止处理</button>
         </div>
-        <div v-if="isProcessing">
+        <div v-if="isProcessing || logContent">
           <h3>处理日志</h3>
           <div class="log-container">
             <pre>{{ logContent }}</pre>
@@ -75,8 +75,8 @@
 <script>
 import axios from 'axios'
 
-// 配置axios使用相对路径，避免端口问题
-axios.defaults.baseURL = ''
+// 配置axios使用后端服务地址
+axios.defaults.baseURL = 'http://localhost:8000'
 
 export default {
   name: 'App',
@@ -101,7 +101,10 @@ export default {
   },
   methods: {
     submitForm() {
+      console.log('submitForm方法被调用')
       console.log('提交配置:', this.form)
+      console.log('axios.baseURL:', axios.defaults.baseURL)
+      console.log('请求URL:', axios.defaults.baseURL + '/api/config')
       axios.post('/api/config', this.form)
         .then(response => {
           console.log('响应:', response)
@@ -110,6 +113,7 @@ export default {
         })
         .catch(error => {
           console.error('错误:', error)
+          console.error('错误详情:', error.response)
           alert('配置保存失败：' + error.message)
         })
     },
@@ -145,16 +149,22 @@ export default {
           // 只添加非空日志且不重复
           const log = data.log.trim()
           if (log && log !== lastLog) {
-            this.logContent += log + '\n'
+            // 简化日志显示，只保留关键信息
+            let simplifiedLog = log
+            // 移除重复的时间戳（如果有）
+            if (simplifiedLog.match(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]/)) {
+              simplifiedLog = simplifiedLog.replace(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]/, '[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}]')
+            }
+            this.logContent += simplifiedLog + '\n'
             lastLog = log
             
             // 计算文件数量和处理进度
-            if (log.includes('找到') && log.includes('个文件')) {
-              const match = log.match(/找到 (\d+) 个文件/)
+            if (simplifiedLog.includes('找到') && simplifiedLog.includes('个文件')) {
+              const match = simplifiedLog.match(/找到 (\d+) 个文件/)
               if (match) {
                 fileCount = parseInt(match[1])
               }
-            } else if (log.includes('成功处理') || log.includes('处理失败')) {
+            } else if (simplifiedLog.includes('成功处理') || simplifiedLog.includes('处理失败')) {
               processedCount++
               if (fileCount > 0) {
                 this.progress = Math.min(100, Math.round((processedCount / fileCount) * 100))
@@ -171,7 +181,16 @@ export default {
           }
         }
         if (data.status) {
-          this.statusText = data.status
+          // 简化状态显示，只保留关键状态
+          let simplifiedStatus = data.status
+          // 移除时间戳
+          if (simplifiedStatus.startsWith('[')) {
+            simplifiedStatus = simplifiedStatus.split('] ')[1]
+          }
+          // 只显示关键状态
+          if (simplifiedStatus.includes('处理中') || simplifiedStatus.includes('成功') || simplifiedStatus.includes('失败') || simplifiedStatus.includes('完成')) {
+            this.statusText = simplifiedStatus
+          }
         }
         if (data.completed) {
           eventSource.close()
