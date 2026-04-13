@@ -1,4 +1,36 @@
-# Knowledge2MD
+# Knowledge2MD（已归档）
+
+## 项目性质
+个人 AI 实验项目（vibecoding 入门）
+
+## 做了什么
+- 使用 DeepSeek API 对文本进行总结
+- 输出 Markdown 笔记
+- 简单 pipeline 实现
+
+## 为什么停止
+- 本质只是“总结工具”，不是知识系统
+- 市面已有大量替代方案
+- 继续优化 ROI 低
+
+## 学到什么
+- LLM pipeline 基本结构
+- prompt 设计与调用方式
+- 成本问题（token消耗）
+- “总结 ≠ 知识”
+
+## 如果重做会怎么做
+- chunk → extract → knowledge → wiki
+- 做结构化知识而不是 summary
+
+## 状态
+已归档，不再维护
+```
+
+👉 这个非常重要，比代码本身更有价值。
+
+---
+# README
 
 一个智能知识库文件处理器，使用DeepSeek API将各种文件转换为结构化Markdown知识库笔记。支持扫描版PDF的OCR文本提取，内置中文语言识别能力。
 
